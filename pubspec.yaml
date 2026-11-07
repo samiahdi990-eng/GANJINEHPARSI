@@ -1,7 +1,7 @@
 name: ganjineh_parsi
-description: Ganjihe Parsi - Persian Literature
+description: Persian Literature Library
 publish_to: 'none'
-version: 1.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: ^3.8.0
@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  shared_preferences: ^2.5.3
 
 dev_dependencies:
   flutter_test:
