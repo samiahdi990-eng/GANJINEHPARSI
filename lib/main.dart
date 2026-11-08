@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,8 +9,9 @@ const green = Color(0xFF24534A);
 const gold = Color(0xFFD6B46A);
 const cream = Color(0xFFF6F1E7);
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await loadSavedPoets();
   runApp(const GanjinehApp());
 }
 
@@ -40,7 +42,7 @@ class Poet {
   );
 }
 
-const poets = <Poet>[
+List<Poet> poets = <Poet>[
   Poet(
     'saadi',
     'سعدی شیرازی',
@@ -176,6 +178,7 @@ class MainPage extends StatefulWidget {
 
 class _MainPageState extends State<MainPage> {
   int tab = 0;
+  int refreshNumber = 0;
 
   final titles = ['گنجینه پارسی', 'جست‌وجو', 'علاقه‌مندی‌ها'];
 
@@ -187,13 +190,30 @@ class _MainPageState extends State<MainPage> {
         appBar: AppBar(
           title: Text(titles[tab],
               style: const TextStyle(fontWeight: FontWeight.bold)),
+          actions: [
+            IconButton(
+              tooltip: 'پنل مدیریت خصوصی',
+              icon: const Icon(Icons.admin_panel_settings),
+              onPressed: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AdminLoginScreen(),
+                  ),
+                );
+                if (mounted) {
+                  setState(() => refreshNumber++);
+                }
+              },
+            ),
+          ],
         ),
         body: IndexedStack(
           index: tab,
           children: [
-            const HomeScreen(),
-            const SearchScreen(),
-            FavoritesScreen(key: ValueKey(tab)),
+            HomeScreen(key: ValueKey('home-$refreshNumber')),
+            SearchScreen(key: ValueKey('search-$refreshNumber')),
+            FavoritesScreen(key: ValueKey('fav-$refreshNumber')),
           ],
         ),
         bottomNavigationBar: NavigationBar(
@@ -695,4 +715,699 @@ class FortuneScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+
+// ---------------- ذخیره‌سازی محلی گنجینه ----------------
+
+const String poetsStorageKey = 'ganjineh_saved_poets_v1';
+const String adminPasswordKey = 'ganjineh_private_admin_password';
+
+Map<String, dynamic> poetToMap(Poet p) => {
+  'id': p.id,
+  'name': p.name,
+  'description': p.description,
+  'emoji': p.emoji,
+  'biography': p.biography,
+  'items': p.items.map((e) => {
+    'id': e.id,
+    'title': e.title,
+    'type': e.type,
+    'body': e.body,
+  }).toList(),
+};
+
+Poet poetFromMap(Map<String, dynamic> m) => Poet(
+  m['id']?.toString() ?? '',
+  m['name']?.toString() ?? '',
+  m['description']?.toString() ?? '',
+  m['emoji']?.toString() ?? '📚',
+  m['biography']?.toString() ?? '',
+  ((m['items'] as List?) ?? []).map((e) {
+    final x = Map<String, dynamic>.from(e as Map);
+    return LiteraryItem(
+      x['id']?.toString() ?? '',
+      x['title']?.toString() ?? '',
+      x['type']?.toString() ?? 'شعر',
+      x['body']?.toString() ?? '',
+    );
+  }).toList(),
+);
+
+Future<void> savePoets() async {
+  final prefs = await SharedPreferences.getInstance();
+  final data = poets.map(poetToMap).toList();
+  await prefs.setString(poetsStorageKey, jsonEncode(data));
+}
+
+Future<void> loadSavedPoets() async {
+  final prefs = await SharedPreferences.getInstance();
+  final raw = prefs.getString(poetsStorageKey);
+  if (raw == null || raw.isEmpty) return;
+
+  try {
+    final decoded = jsonDecode(raw) as List;
+    poets = decoded
+        .map((e) => poetFromMap(Map<String, dynamic>.from(e as Map)))
+        .toList();
+  } catch (_) {
+    // اگر نسخه پشتیبان خراب بود، اطلاعات اولیه حفظ می‌شود.
+  }
+}
+
+// ---------------- ورود مدیر خصوصی ----------------
+
+class AdminLoginScreen extends StatefulWidget {
+  const AdminLoginScreen({super.key});
+
+  @override
+  State<AdminLoginScreen> createState() => _AdminLoginScreenState();
+}
+
+class _AdminLoginScreenState extends State<AdminLoginScreen> {
+  final passwordController = TextEditingController();
+  final confirmController = TextEditingController();
+  bool firstSetup = false;
+  bool loading = true;
+  String error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    checkPassword();
+  }
+
+  Future<void> checkPassword() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      firstSetup = !prefs.containsKey(adminPasswordKey);
+      loading = false;
+    });
+  }
+
+  Future<void> enter() async {
+    final password = passwordController.text.trim();
+    if (password.length < 6) {
+      setState(() => error = 'رمز باید حداقل ۶ حرف یا عدد باشد.');
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+
+    if (firstSetup) {
+      if (password != confirmController.text.trim()) {
+        setState(() => error = 'تکرار رمز با رمز اول یکسان نیست.');
+        return;
+      }
+      await prefs.setString(adminPasswordKey, password);
+    } else {
+      if (password != prefs.getString(adminPasswordKey)) {
+        setState(() => error = 'رمز ورود اشتباه است.');
+        return;
+      }
+    }
+
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const AdminDashboard()),
+    );
+  }
+
+  @override
+  void dispose() {
+    passwordController.dispose();
+    confirmController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(title: const Text('ورود مدیر خصوصی')),
+        body: loading
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
+                padding: const EdgeInsets.all(22),
+                children: [
+                  const SizedBox(height: 35),
+                  const Icon(Icons.shield, size: 75, color: gold),
+                  const SizedBox(height: 18),
+                  Text(
+                    firstSetup ? 'ساخت رمز مدیر' : 'ورود به مدیریت',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 23,
+                      fontWeight: FontWeight.bold,
+                      color: dark,
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  TextField(
+                    controller: passwordController,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'رمز مدیر',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  if (firstSetup) ...[
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: confirmController,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'تکرار رمز مدیر',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  if (error.isNotEmpty)
+                    Text(error, style: const TextStyle(color: Colors.red)),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: dark,
+                      padding: const EdgeInsets.all(15),
+                    ),
+                    onPressed: enter,
+                    child: Text(firstSetup ? 'ثبت رمز و ورود' : 'ورود امن'),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'رمز فقط در حافظه محلی این نصب برنامه ذخیره می‌شود. '
+                    'برای امنیت بیشتر، رمز را با کسی به اشتراک نگذار.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+// ---------------- پنل مدیریت ----------------
+
+class AdminDashboard extends StatefulWidget {
+  const AdminDashboard({super.key});
+
+  @override
+  State<AdminDashboard> createState() => _AdminDashboardState();
+}
+
+class _AdminDashboardState extends State<AdminDashboard> {
+  Future<void> refresh() async {
+    await savePoets();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> addPoet() async {
+    final result = await showPoetEditor(context);
+    if (result == null) return;
+
+    final id = 'custom_${DateTime.now().microsecondsSinceEpoch}';
+    poets.add(Poet(
+      id,
+      result['name']!,
+      result['description']!,
+      result['emoji']!,
+      result['biography']!,
+      [],
+    ));
+    await refresh();
+  }
+
+  Future<void> editPoet(int index) async {
+    final old = poets[index];
+    final result = await showPoetEditor(context, poet: old);
+    if (result == null) return;
+
+    poets[index] = Poet(
+      old.id,
+      result['name']!,
+      result['description']!,
+      result['emoji']!,
+      result['biography']!,
+      old.items,
+    );
+    await refresh();
+  }
+
+  Future<void> deletePoet(int index) async {
+    final ok = await confirmDelete(context, 'این شاعر و تمام آثارش حذف شود؟');
+    if (!ok) return;
+    poets.removeAt(index);
+    await refresh();
+  }
+
+  Future<void> addItem(int index) async {
+    final result = await showItemEditor(context);
+    if (result == null) return;
+    final old = poets[index];
+    final items = [...old.items];
+    items.add(LiteraryItem(
+      'custom_${DateTime.now().microsecondsSinceEpoch}',
+      result['title']!,
+      result['type']!,
+      result['body']!,
+    ));
+    poets[index] = Poet(
+      old.id, old.name, old.description, old.emoji, old.biography, items,
+    );
+    await refresh();
+  }
+
+  Future<void> editItem(int poetIndex, int itemIndex) async {
+    final oldPoet = poets[poetIndex];
+    final oldItem = oldPoet.items[itemIndex];
+    final result = await showItemEditor(context, item: oldItem);
+    if (result == null) return;
+
+    final items = [...oldPoet.items];
+    items[itemIndex] = LiteraryItem(
+      oldItem.id,
+      result['title']!,
+      result['type']!,
+      result['body']!,
+    );
+    poets[poetIndex] = Poet(
+      oldPoet.id, oldPoet.name, oldPoet.description,
+      oldPoet.emoji, oldPoet.biography, items,
+    );
+    await refresh();
+  }
+
+  Future<void> deleteItem(int poetIndex, int itemIndex) async {
+    final ok = await confirmDelete(context, 'این شعر یا مطلب حذف شود؟');
+    if (!ok) return;
+    final old = poets[poetIndex];
+    final items = [...old.items]..removeAt(itemIndex);
+    poets[poetIndex] = Poet(
+      old.id, old.name, old.description, old.emoji, old.biography, items,
+    );
+    await refresh();
+  }
+
+  Future<void> backup() async {
+    final data = jsonEncode(poets.map(poetToMap).toList());
+    await Clipboard.setData(ClipboardData(text: data));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('نسخه پشتیبان کپی شد؛ آن را در فایل متنی ذخیره کن.')),
+    );
+  }
+
+  Future<void> restore() async {
+    final controller = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('بازیابی نسخه پشتیبان'),
+        content: TextField(
+          controller: controller,
+          maxLines: 8,
+          decoration: const InputDecoration(
+            hintText: 'متن JSON نسخه پشتیبان را اینجا وارد کن',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('انصراف'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('بازیابی'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) {
+      controller.dispose();
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(controller.text) as List;
+      final restored = decoded.map((e) =>
+        poetFromMap(Map<String, dynamic>.from(e as Map))).toList();
+      if (restored.isEmpty) throw const FormatException();
+      poets = restored;
+      await refresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('اطلاعات با موفقیت بازیابی شد.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('فایل پشتیبان معتبر نیست.')),
+        );
+      }
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<void> settings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final controller = TextEditingController(
+      text: prefs.getString(adminPasswordKey) ?? '',
+    );
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('تنظیمات امنیتی'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('تغییر رمز ورود پنل مدیریت'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'رمز جدید (حداقل ۶ کاراکتر)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('انصراف'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final value = controller.text.trim();
+              if (value.length < 6) return;
+              await prefs.setString(adminPasswordKey, value);
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            child: const Text('ذخیره رمز'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final totalItems = poets.fold<int>(0, (sum, p) => sum + p.items.length);
+
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(title: const Text('پنل مدیریت گنجینه')),
+        body: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(colors: [dark, green]),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: gold),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _AdminStat(title: 'شاعران', value: '${poets.length}'),
+                  _AdminStat(title: 'مطالب', value: '$totalItems'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: dark),
+              onPressed: addPoet,
+              icon: const Icon(Icons.person_add),
+              label: const Text('افزودن شاعر جدید'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: backup,
+              icon: const Icon(Icons.backup),
+              label: const Text('تهیه نسخه پشتیبان'),
+            ),
+            OutlinedButton.icon(
+              onPressed: restore,
+              icon: const Icon(Icons.restore),
+              label: const Text('بازیابی نسخه پشتیبان'),
+            ),
+            OutlinedButton.icon(
+              onPressed: settings,
+              icon: const Icon(Icons.settings),
+              label: const Text('تنظیمات و تغییر رمز مدیر'),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              'مدیریت شاعران و آثار',
+              style: TextStyle(
+                color: dark, fontSize: 20, fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...List.generate(poets.length, (index) {
+              final poet = poets[index];
+              return Card(
+                color: Colors.white,
+                child: ExpansionTile(
+                  leading: CircleAvatar(
+                    backgroundColor: dark,
+                    child: Text(poet.emoji),
+                  ),
+                  title: Text(
+                    poet.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text('${poet.items.length} مطلب'),
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.edit, color: green),
+                      title: const Text('ویرایش مشخصات شاعر'),
+                      onTap: () => editPoet(index),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.add, color: green),
+                      title: const Text('افزودن شعر یا مطلب'),
+                      onTap: () => addItem(index),
+                    ),
+                    ...List.generate(poet.items.length, (itemIndex) {
+                      final item = poet.items[itemIndex];
+                      return ListTile(
+                        title: Text(item.title),
+                        subtitle: Text(item.type),
+                        leading: const Icon(Icons.menu_book, color: gold),
+                        trailing: Wrap(
+                          spacing: 0,
+                          children: [
+                            IconButton(
+                              tooltip: 'ویرایش',
+                              icon: const Icon(Icons.edit, color: green),
+                              onPressed: () => editItem(index, itemIndex),
+                            ),
+                            IconButton(
+                              tooltip: 'حذف',
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () => deleteItem(index, itemIndex),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                    ListTile(
+                      leading: const Icon(Icons.delete_forever, color: Colors.red),
+                      title: const Text(
+                        'حذف کامل شاعر',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                      onTap: () => deletePoet(index),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AdminStat extends StatelessWidget {
+  final String title;
+  final String value;
+  const _AdminStat({required this.title, required this.value});
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Text(value, style: const TextStyle(
+        color: gold, fontSize: 25, fontWeight: FontWeight.bold,
+      )),
+      Text(title, style: const TextStyle(color: Colors.white)),
+    ],
+  );
+}
+
+// ---------------- فرم‌های افزودن و ویرایش ----------------
+
+Future<bool> confirmDelete(BuildContext context, String message) async {
+  return await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('تأیید حذف'),
+      content: Text(message),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('بازگشت'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: Colors.red),
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('حذف'),
+        ),
+      ],
+    ),
+  ) ?? false;
+}
+
+Future<Map<String, String>?> showPoetEditor(
+  BuildContext context, {Poet? poet}
+) async {
+  final name = TextEditingController(text: poet?.name ?? '');
+  final description = TextEditingController(text: poet?.description ?? '');
+  final emoji = TextEditingController(text: poet?.emoji ?? '📚');
+  final biography = TextEditingController(text: poet?.biography ?? '');
+
+  final result = await showDialog<Map<String, String>>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(poet == null ? 'افزودن شاعر' : 'ویرایش شاعر'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'نام شاعر')),
+              TextField(controller: description, decoration: const InputDecoration(labelText: 'توضیح کوتاه')),
+              TextField(controller: emoji, decoration: const InputDecoration(labelText: 'نماد یا ایموجی')),
+              TextField(
+                controller: biography,
+                maxLines: 5,
+                decoration: const InputDecoration(labelText: 'زندگی‌نامه'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('انصراف'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (name.text.trim().isEmpty) return;
+            Navigator.pop(ctx, {
+              'name': name.text.trim(),
+              'description': description.text.trim(),
+              'emoji': emoji.text.trim().isEmpty ? '📚' : emoji.text.trim(),
+              'biography': biography.text.trim(),
+            });
+          },
+          child: const Text('ذخیره'),
+        ),
+      ],
+    ),
+  );
+
+  name.dispose();
+  description.dispose();
+  emoji.dispose();
+  biography.dispose();
+  return result;
+}
+
+Future<Map<String, String>?> showItemEditor(
+  BuildContext context, {LiteraryItem? item}
+) async {
+  final title = TextEditingController(text: item?.title ?? '');
+  final body = TextEditingController(text: item?.body ?? '');
+  String type = item?.type ?? 'شعر';
+
+  final result = await showDialog<Map<String, String>>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AlertDialog(
+        title: Text(item == null ? 'افزودن مطلب' : 'ویرایش مطلب'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Column(
+              children: [
+                TextField(controller: title, decoration: const InputDecoration(labelText: 'عنوان')),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: type,
+                  decoration: const InputDecoration(labelText: 'نوع مطلب'),
+                  items: const ['شعر', 'داستان', 'کتاب', 'سخن', 'قصیده', 'غزل', 'رباعی']
+                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) setDialogState(() => type = v);
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: body,
+                  maxLines: 9,
+                  decoration: const InputDecoration(
+                    labelText: 'متن کامل',
+                    alignLabelWithHint: true,
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('انصراف'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (title.text.trim().isEmpty || body.text.trim().isEmpty) return;
+              Navigator.pop(ctx, {
+                'title': title.text.trim(),
+                'type': type,
+                'body': body.text.trim(),
+              });
+            },
+            child: const Text('ذخیره'),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  title.dispose();
+  body.dispose();
+  return result;
 }
